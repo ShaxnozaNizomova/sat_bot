@@ -17,6 +17,7 @@ from telegram.ext import (
     filters,
 )
 
+from config import ADMIN_ID
 from database import (
     create_video,
     delete_user_by_telegram_id,
@@ -32,7 +33,10 @@ ADD_TITLE, ADD_LINK = range(2)
 
 
 async def _is_admin(telegram_id: int) -> bool:
-    # Run sync DB call without blocking the asyncio loop
+    # Super admin always allowed
+    if telegram_id == ADMIN_ID:
+        return True
+    # Others must exist in DB admins table
     return await asyncio.to_thread(is_admin, telegram_id)
 
 
@@ -54,7 +58,6 @@ async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 
 async def cancel_admin_flow(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    # Allows admin to exit the conversation cleanly
     if update.message is not None:
         await update.message.reply_text(
             "Cancelled.", reply_markup=ReplyKeyboardRemove()
@@ -77,9 +80,6 @@ async def add_video_start(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 async def add_video_title(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if update.message is None or update.message.text is None:
-        # If no message text, ask again
-        if update.message is not None:
-            await update.message.reply_text("Enter video title:")
         return ADD_TITLE
 
     title = update.message.text.strip()
@@ -103,15 +103,9 @@ async def add_video_link(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     title = str(context.user_data.get("video_title", "")).strip()
     youtube_link = update.message.text.strip()
 
-    if not title:
-        await update.message.reply_text("Enter video title:")
-        return ADD_TITLE
-
-    if not youtube_link:
-        await update.message.reply_text("Enter YouTube link:")
+    if not title or not youtube_link:
         return ADD_LINK
 
-    # DB write (sync) -> run in thread
     await asyncio.to_thread(create_video, title, youtube_link)
     context.user_data.pop("video_title", None)
 
@@ -120,12 +114,10 @@ async def add_video_link(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         reply_markup=ReplyKeyboardRemove(),
     )
 
-    # Broadcast new video to all users (DB read -> thread)
     users = await asyncio.to_thread(get_all_users)
     broadcast_message = f"New video just released!\n{youtube_link}"
 
     for user in users:
-        # Your tuple order is: (id, name, phone, telegram_id)
         user_telegram_id = user[3]
         try:
             await context.bot.send_message(
@@ -172,9 +164,7 @@ async def view_users(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         await update.message.reply_text(text, reply_markup=reply_markup)
 
 
-async def handle_delete_user_callback(
-    update: Update, context: ContextTypes.DEFAULT_TYPE
-) -> None:
+async def handle_delete_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.effective_user is None or update.callback_query is None:
         return
 
@@ -187,8 +177,8 @@ async def handle_delete_user_callback(
         return
 
     telegram_id_text = data.replace("delete_user_", "", 1)
+
     if not telegram_id_text.isdigit():
-        await update.callback_query.answer("Invalid user ID.", show_alert=True)
         return
 
     await asyncio.to_thread(delete_user_by_telegram_id, int(telegram_id_text))
@@ -230,9 +220,7 @@ async def manage_videos(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await update.message.reply_text(text, reply_markup=reply_markup)
 
 
-async def handle_delete_video_callback(
-    update: Update, context: ContextTypes.DEFAULT_TYPE
-) -> None:
+async def handle_delete_video_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.effective_user is None or update.callback_query is None:
         return
 
@@ -245,8 +233,8 @@ async def handle_delete_video_callback(
         return
 
     video_id_text = data.replace("delete_video_", "", 1)
+
     if not video_id_text.isdigit():
-        await update.callback_query.answer("Invalid video ID.", show_alert=True)
         return
 
     await asyncio.to_thread(delete_video_by_id, int(video_id_text))
