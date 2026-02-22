@@ -24,7 +24,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Railway provides PORT via env var
 PORT = int(os.getenv("PORT", "8080"))
 
 application = Flask(__name__)
@@ -34,15 +33,20 @@ event_loop: asyncio.AbstractEventLoop | None = None
 loop_thread: threading.Thread | None = None
 
 
+async def on_error(update, context):
+    # This prints real exceptions from handlers (super useful on Railway)
+    logger.exception("PTB handler error", exc_info=context.error)
+
+
 def setup_application() -> Application:
     logger.info("Setting up Telegram application...")
 
-    # Initialize database (creates tables)
+    # Create tables
     init_db()
 
     app = Application.builder().token(BOT_TOKEN).build()
 
-    # Register handlers
+    # Handlers
     app.add_handler(admin_delete_user_callback_handler, group=0)
     app.add_handler(admin_delete_video_callback_handler, group=0)
     app.add_handler(admin_add_video_handler, group=0)
@@ -52,6 +56,9 @@ def setup_application() -> Application:
 
     app.add_handler(registration_handler, group=1)
     app.add_handler(video_selection_handler, group=2)
+
+    # Error handler (prints stack traces)
+    app.add_error_handler(on_error)
 
     logger.info("Telegram application setup complete")
     return app
@@ -68,13 +75,23 @@ def webhook():
         update_data = request.get_json(force=True)
         update = Update.de_json(update_data, telegram_app.bot)
 
-        # Schedule update processing without blocking HTTP response
-        asyncio.run_coroutine_threadsafe(telegram_app.process_update(update), event_loop)
+        future = asyncio.run_coroutine_threadsafe(
+            telegram_app.process_update(update), event_loop
+        )
+
+        # Log exceptions happening in process_update (otherwise they are silent)
+        def _log_future_result(f):
+            try:
+                f.result()
+            except Exception as e:
+                logger.exception(f"process_update crashed: {e}")
+
+        future.add_done_callback(_log_future_result)
 
         return Response(status=200)
 
     except Exception as e:
-        logger.error(f"Error processing update: {e}")
+        logger.error(f"Error parsing update in webhook: {e}")
         return Response(status=500)
 
 
@@ -89,9 +106,6 @@ def health():
 
 
 async def setup_webhook():
-    """
-    Hard reset webhook to avoid Telegram caching / stale webhook issues.
-    """
     global telegram_app
     if telegram_app is None:
         raise RuntimeError("telegram_app is not initialized")
@@ -101,7 +115,7 @@ async def setup_webhook():
 
     logger.info(f"Resetting webhook to: {WEBHOOK_URL}")
 
-    # Drop pending updates and force set correct webhook URL
+    # Hard reset: drop old updates and set correct URL
     await telegram_app.bot.delete_webhook(drop_pending_updates=True)
     await telegram_app.bot.set_webhook(url=WEBHOOK_URL)
 
@@ -134,10 +148,12 @@ def main():
     telegram_app = setup_application()
 
     event_loop = asyncio.new_event_loop()
-    loop_thread = threading.Thread(target=_start_event_loop, args=(event_loop,), daemon=True)
+    loop_thread = threading.Thread(
+        target=_start_event_loop, args=(event_loop,), daemon=True
+    )
     loop_thread.start()
 
-    # Start the telegram app on the background loop
+    # Start telegram app on the background loop
     asyncio.run_coroutine_threadsafe(telegram_app.initialize(), event_loop).result()
     asyncio.run_coroutine_threadsafe(telegram_app.start(), event_loop).result()
     asyncio.run_coroutine_threadsafe(setup_webhook(), event_loop).result()
