@@ -39,9 +39,7 @@ def _build_videos_keyboard(titles: list[str]) -> ReplyKeyboardMarkup:
     if row:
         rows.append(row)
 
-    # Add a simple refresh button
     rows.append(["🔄 Refresh videos"])
-
     return ReplyKeyboardMarkup(rows, resize_keyboard=True)
 
 
@@ -58,8 +56,7 @@ async def _send_video_menu(update: Update, prompt_text: str) -> None:
         return
 
     titles = [video[1] for video in videos]
-    reply_markup = _build_videos_keyboard(titles)
-    await update.message.reply_text(prompt_text, reply_markup=reply_markup)
+    await update.message.reply_text(prompt_text, reply_markup=_build_videos_keyboard(titles))
 
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -99,9 +96,6 @@ async def handle_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
 
 
 async def handle_phone(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """
-    Accepts either Telegram contact OR typed phone number.
-    """
     if update.effective_user is None or update.message is None:
         return ConversationHandler.END
 
@@ -136,19 +130,16 @@ async def handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
     if not text:
         return MENU
 
-    # Ignore admin panel button texts (prevents mixing)
+    # Ignore admin panel button texts completely
     if text in ADMIN_BUTTONS:
         return MENU
 
-    # Refresh
     if text == "🔄 Refresh videos":
         await _send_video_menu(update, "Updated list. Choose a video:")
         return MENU
 
-    # Only respond if the text matches an actual video title
     video = await asyncio.to_thread(get_video_by_title, text)
     if not video:
-        # Do nothing (no spam)
         return MENU
 
     await update.message.reply_text(f"Here is your video:\n{video[2]}")
@@ -162,7 +153,6 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     return ConversationHandler.END
 
 
-# One clean conversation for users
 registration_handler = ConversationHandler(
     entry_points=[CommandHandler("start", start_command)],
     states={
@@ -171,9 +161,7 @@ registration_handler = ConversationHandler(
             MessageHandler(filters.CONTACT, handle_phone),
             MessageHandler(filters.TEXT & ~filters.COMMAND, handle_phone),
         ],
-        MENU: [
-            MessageHandler(filters.TEXT & ~filters.COMMAND, handle_menu),
-        ],
+        MENU: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_menu)],
     },
     fallbacks=[CommandHandler("cancel", cancel)],
     block=True,
