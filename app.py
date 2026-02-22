@@ -37,6 +37,7 @@ loop_thread: threading.Thread | None = None
 def setup_application() -> Application:
     logger.info("Setting up Telegram application...")
 
+    # Initialize database (creates tables)
     init_db()
 
     app = Application.builder().token(BOT_TOKEN).build()
@@ -48,6 +49,7 @@ def setup_application() -> Application:
     app.add_handler(admin_view_users_handler, group=0)
     app.add_handler(admin_manage_videos_handler, group=0)
     app.add_handler(CommandHandler("admin", admin_command), group=0)
+
     app.add_handler(registration_handler, group=1)
     app.add_handler(video_selection_handler, group=2)
 
@@ -66,7 +68,7 @@ def webhook():
         update_data = request.get_json(force=True)
         update = Update.de_json(update_data, telegram_app.bot)
 
-        # Schedule processing without blocking the HTTP response
+        # Schedule update processing without blocking HTTP response
         asyncio.run_coroutine_threadsafe(telegram_app.process_update(update), event_loop)
 
         return Response(status=200)
@@ -87,17 +89,24 @@ def health():
 
 
 async def setup_webhook():
+    """
+    Hard reset webhook to avoid Telegram caching / stale webhook issues.
+    """
     global telegram_app
     if telegram_app is None:
         raise RuntimeError("telegram_app is not initialized")
 
-    logger.info(f"Ensuring webhook is set to: {WEBHOOK_URL}")
+    if not WEBHOOK_URL or not WEBHOOK_URL.startswith("https://"):
+        raise RuntimeError("WEBHOOK_URL must be set and start with https://")
+
+    logger.info(f"Resetting webhook to: {WEBHOOK_URL}")
+
+    # Drop pending updates and force set correct webhook URL
+    await telegram_app.bot.delete_webhook(drop_pending_updates=True)
+    await telegram_app.bot.set_webhook(url=WEBHOOK_URL)
+
     info = await telegram_app.bot.get_webhook_info()
-    if info.url != WEBHOOK_URL:
-        await telegram_app.bot.set_webhook(url=WEBHOOK_URL)
-        logger.info("Webhook updated")
-    else:
-        logger.info("Webhook already correct")
+    logger.info(f"Webhook is now: {info.url}")
 
 
 async def remove_webhook():
@@ -128,7 +137,7 @@ def main():
     loop_thread = threading.Thread(target=_start_event_loop, args=(event_loop,), daemon=True)
     loop_thread.start()
 
-    # Initialize and start the telegram app on the background loop
+    # Start the telegram app on the background loop
     asyncio.run_coroutine_threadsafe(telegram_app.initialize(), event_loop).result()
     asyncio.run_coroutine_threadsafe(telegram_app.start(), event_loop).result()
     asyncio.run_coroutine_threadsafe(setup_webhook(), event_loop).result()
