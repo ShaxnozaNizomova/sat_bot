@@ -70,7 +70,7 @@ def setup_application() -> Application:
     app.add_handler(admin_delete_video_callback_handler, group=0)
 
     # -------- User Conversation --------
-    app.add_handler(registration_handler, group=1)
+    app.add_handler(registration_handler, group=2)
 
     # -------- Error handler --------
     app.add_error_handler(on_error)
