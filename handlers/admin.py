@@ -19,6 +19,7 @@ from telegram.ext import (
 
 from config import ADMIN_ID
 from database import (
+    add_admin,
     create_video,
     delete_user_by_telegram_id,
     delete_video_by_id,
@@ -33,10 +34,8 @@ ADD_TITLE, ADD_LINK = range(2)
 
 
 async def _is_admin(telegram_id: int) -> bool:
-    # Super admin always allowed
     if telegram_id == ADMIN_ID:
         return True
-    # Others must exist in DB admins table
     return await asyncio.to_thread(is_admin, telegram_id)
 
 
@@ -53,15 +52,33 @@ async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         resize_keyboard=True,
         one_time_keyboard=True,
     )
-
     await update.message.reply_text("Admin panel:", reply_markup=reply_markup)
+
+
+async def addadmin_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Usage: /addadmin 1854307576
+    Only super admin (ADMIN_ID) can run this.
+    """
+    if update.effective_user is None or update.message is None:
+        return
+
+    if update.effective_user.id != ADMIN_ID:
+        await update.message.reply_text("Access denied.")
+        return
+
+    if not context.args or not context.args[0].isdigit():
+        await update.message.reply_text("Usage: /addadmin <telegram_id>")
+        return
+
+    new_admin_id = int(context.args[0])
+    await asyncio.to_thread(add_admin, new_admin_id)
+    await update.message.reply_text(f"Added admin: {new_admin_id}")
 
 
 async def cancel_admin_flow(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if update.message is not None:
-        await update.message.reply_text(
-            "Cancelled.", reply_markup=ReplyKeyboardRemove()
-        )
+        await update.message.reply_text("Cancelled.", reply_markup=ReplyKeyboardRemove())
     context.user_data.pop("video_title", None)
     return ConversationHandler.END
 
@@ -103,7 +120,12 @@ async def add_video_link(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     title = str(context.user_data.get("video_title", "")).strip()
     youtube_link = update.message.text.strip()
 
-    if not title or not youtube_link:
+    if not title:
+        await update.message.reply_text("Enter video title:")
+        return ADD_TITLE
+
+    if not youtube_link:
+        await update.message.reply_text("Enter YouTube link:")
         return ADD_LINK
 
     await asyncio.to_thread(create_video, title, youtube_link)
@@ -114,18 +136,16 @@ async def add_video_link(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         reply_markup=ReplyKeyboardRemove(),
     )
 
+    # Broadcast
     users = await asyncio.to_thread(get_all_users)
     broadcast_message = f"New video just released!\n{youtube_link}"
 
     for user in users:
-        user_telegram_id = user[3]
+        user_telegram_id = user[3]  # (id, name, phone, telegram_id)
         try:
-            await context.bot.send_message(
-                chat_id=user_telegram_id,
-                text=broadcast_message,
-            )
+            await context.bot.send_message(chat_id=user_telegram_id, text=broadcast_message)
         except Exception as e:
-            logger.warning(f"Failed to send broadcast to {user_telegram_id}: {e}")
+            logger.warning(f"Failed to send to {user_telegram_id}: {e}")
         await asyncio.sleep(0.05)
 
     return ConversationHandler.END
@@ -140,27 +160,17 @@ async def view_users(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         return
 
     users = await asyncio.to_thread(get_all_users)
-
     if not users:
         await update.message.reply_text("No registered users.")
         return
 
     for user in users:
         _, name, phone, telegram_id = user
-
         text = f"Name: {name}\nPhone: {phone}\nTelegram ID: {telegram_id}"
 
         reply_markup = InlineKeyboardMarkup(
-            [
-                [
-                    InlineKeyboardButton(
-                        "❌ Delete",
-                        callback_data=f"delete_user_{telegram_id}",
-                    )
-                ]
-            ]
+            [[InlineKeyboardButton("❌ Delete", callback_data=f"delete_user_{telegram_id}")]]
         )
-
         await update.message.reply_text(text, reply_markup=reply_markup)
 
 
@@ -177,12 +187,10 @@ async def handle_delete_user_callback(update: Update, context: ContextTypes.DEFA
         return
 
     telegram_id_text = data.replace("delete_user_", "", 1)
-
     if not telegram_id_text.isdigit():
         return
 
     await asyncio.to_thread(delete_user_by_telegram_id, int(telegram_id_text))
-
     await update.callback_query.edit_message_text("User deleted successfully.")
     await update.callback_query.answer()
 
@@ -196,27 +204,15 @@ async def manage_videos(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         return
 
     videos = await asyncio.to_thread(get_all_videos_with_id)
-
     if not videos:
         await update.message.reply_text("No videos available.")
         return
 
-    for video in videos:
-        video_id, title, youtube_link = video
-
+    for video_id, title, youtube_link in videos:
         text = f"Title: {title}\nLink: {youtube_link}"
-
         reply_markup = InlineKeyboardMarkup(
-            [
-                [
-                    InlineKeyboardButton(
-                        "❌ Delete Video",
-                        callback_data=f"delete_video_{video_id}",
-                    )
-                ]
-            ]
+            [[InlineKeyboardButton("❌ Delete Video", callback_data=f"delete_video_{video_id}")]]
         )
-
         await update.message.reply_text(text, reply_markup=reply_markup)
 
 
@@ -233,52 +229,28 @@ async def handle_delete_video_callback(update: Update, context: ContextTypes.DEF
         return
 
     video_id_text = data.replace("delete_video_", "", 1)
-
     if not video_id_text.isdigit():
         return
 
     await asyncio.to_thread(delete_video_by_id, int(video_id_text))
-
     await update.callback_query.edit_message_text("Video deleted successfully.")
     await update.callback_query.answer()
 
 
 admin_add_video_handler = ConversationHandler(
-    entry_points=[
-        MessageHandler(filters.TEXT & filters.Regex(r"^Add Video$"), add_video_start)
-    ],
+    entry_points=[MessageHandler(filters.TEXT & filters.Regex(r"^Add Video$"), add_video_start)],
     states={
-        ADD_TITLE: [
-            MessageHandler(filters.TEXT & ~filters.COMMAND, add_video_title)
-        ],
-        ADD_LINK: [
-            MessageHandler(filters.TEXT & ~filters.COMMAND, add_video_link)
-        ],
+        ADD_TITLE: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_video_title)],
+        ADD_LINK: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_video_link)],
     },
     fallbacks=[CommandHandler("cancel", cancel_admin_flow)],
     block=True,
 )
 
-admin_view_users_handler = MessageHandler(
-    filters.TEXT & filters.Regex(r"^View Users$"),
-    view_users,
-    block=True,
-)
+admin_view_users_handler = MessageHandler(filters.TEXT & filters.Regex(r"^View Users$"), view_users, block=True)
+admin_manage_videos_handler = MessageHandler(filters.TEXT & filters.Regex(r"^Manage Videos$"), manage_videos, block=True)
 
-admin_manage_videos_handler = MessageHandler(
-    filters.TEXT & filters.Regex(r"^Manage Videos$"),
-    manage_videos,
-    block=True,
-)
+admin_delete_user_callback_handler = CallbackQueryHandler(handle_delete_user_callback, pattern=r"^delete_user_\d+$", block=True)
+admin_delete_video_callback_handler = CallbackQueryHandler(handle_delete_video_callback, pattern=r"^delete_video_\d+$", block=True)
 
-admin_delete_user_callback_handler = CallbackQueryHandler(
-    handle_delete_user_callback,
-    pattern=r"^delete_user_\d+$",
-    block=True,
-)
-
-admin_delete_video_callback_handler = CallbackQueryHandler(
-    handle_delete_video_callback,
-    pattern=r"^delete_video_\d+$",
-    block=True,
-)
+addadmin_handler = CommandHandler("addadmin", addadmin_command)
